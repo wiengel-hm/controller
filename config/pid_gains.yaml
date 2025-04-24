@@ -1,0 +1,5 @@
+/**:
+  ros__parameters:
+    kp: 0.9            # proportional gain
+    kd: 0.0            # derivativ gain
+    speed: 0.6         # max speed
