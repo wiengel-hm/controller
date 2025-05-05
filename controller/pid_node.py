@@ -5,7 +5,8 @@ from ackermann_msgs.msg import AckermannDriveStamped, AckermannDrive
 from rclpy.qos import qos_profile_sensor_data  # Quality of Service settings for real-time data
 import time
 from ros2_numpy import pose_to_np, to_ackermann
-
+from collections import deque
+import numpy as np
 
 class PIDcontroller(Node):
     def __init__(self):
@@ -37,26 +38,43 @@ class PIDcontroller(Node):
 
         self.last_error = 0.0
         self.last_time = time.time()
+        self.last_steering_angle = 0.0
+
+        # Initialize deque with a fixed length of self.max_out
+        # This could be useful to allow the vehicle to temporarily lose the track for up to max_out frames before deciding to stop. (Currently not used yet.)
+        self.max_out = 3
+        self.success = deque([True, True, True], maxlen=self.max_out)
 
     def waypoint_callback(self, msg: PoseStamped):
+
         # Convert incoming pose message to position, heading, and timestamp
         point, heading, timestamp_unix = pose_to_np(msg)
 
+        # If the detected point contains NaN (tracking lost) stop the vehicle
+        if np.isnan(point).any():
+            ackermann_msg = to_ackermann(0.0, self.last_steering_angle, timestamp_unix)
+            self.publisher.publish(ackermann_msg) # BRAKE
+            self.success.append(False)
+            return
+        else:
+            self.success.append(True)
+
+
         # Calculate time difference since last callback
-        # dt = 
+        dt = timestamp_unix - self.last_time
 
         # Update the last time to the current timestamp
-
+        self.last_time = timestamp_unix
 
         # Get x and y coordinates (ignore z), and compute the error in y
         x, y, _ = point
-        error = 0
+        error = 0.0 - y  # Assuming the goal is to stay centered at y = 0
 
         # Calculate the derivative of the error (change in error over time)
-        # d_error = 
+        d_error = (error - self.last_error) / dt 
 
         # Compute the steering angle using a PD controller
-        steering_angle = 0.0
+        steering_angle = (self.kp * error) + (self.kd * d_error)
 
         # Get the timestamp from the message header
         timestamp = msg.header.stamp
@@ -69,6 +87,10 @@ class PIDcontroller(Node):
 
         # Save the current error for use in the next iteration
         self.last_error = error
+
+        # If tracking is lost, continue driving with the last known steering angle
+        # to follow the previously estimated path (e.g., maintain the current curve)
+        self.last_steering_angle = steering_angle
 
 
     def declare_params(self):
