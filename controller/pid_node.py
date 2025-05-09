@@ -42,8 +42,8 @@ class PIDcontroller(Node):
 
         # Initialize deque with a fixed length of self.max_out
         # This could be useful to allow the vehicle to temporarily lose the track for up to max_out frames before deciding to stop. (Currently not used yet.)
-        self.max_out = 3
-        self.success = deque([True, True, True], maxlen=self.max_out)
+        self.max_out = 9
+        self.success = deque([True] * self.max_out, maxlen=self.max_out)
 
     def waypoint_callback(self, msg: PoseStamped):
 
@@ -52,9 +52,13 @@ class PIDcontroller(Node):
 
         # If the detected point contains NaN (tracking lost) stop the vehicle
         if np.isnan(point).any():
-            ackermann_msg = to_ackermann(0.0, self.last_steering_angle, timestamp_unix)
-            self.publisher.publish(ackermann_msg) # BRAKE
             self.success.append(False)
+            if any(self.success):
+                # Keep driving with the last known steering angle unless the line is lost for self.max_out consecutive frames
+                ackermann_msg = to_ackermann(self.speed, self.last_steering_angle, timestamp_unix)
+            else:
+                ackermann_msg = to_ackermann(0.0, self.last_steering_angle, timestamp_unix)
+                self.publisher.publish(ackermann_msg) # BRAKE
             return
         else:
             self.success.append(True)
