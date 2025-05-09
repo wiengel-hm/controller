@@ -7,6 +7,7 @@ import time
 from ros2_numpy import pose_to_np, to_ackermann
 from collections import deque
 import numpy as np
+import time
 
 class PIDcontroller(Node):
     def __init__(self):
@@ -21,7 +22,8 @@ class PIDcontroller(Node):
 
         # Create a subscription to listen for PoseStamped messages from the '/waypoint' topic
         # When a message is received, the 'self.waypoint_callback' function is called
-        self.way_sub = self.create_subscription(PoseStamped, '/waypoint', self.waypoint_callback, qos_profile)
+        self.way_sub = self.create_subscription(PoseStamped,'/waypoint', self.waypoint_callback, qos_profile)
+        self.obj_sub = self.create_subscription(PoseStamped,'/object', self.obj_callback, qos_profile)
 
         # Load parameters
         self.params_set = False
@@ -39,6 +41,61 @@ class PIDcontroller(Node):
         # This could be useful to allow the vehicle to temporarily lose the track for up to max_out frames before deciding to stop. (Currently not used yet.)
         self.max_out = 9
         self.success = deque([True] * self.max_out, maxlen=self.max_out)
+
+        self.len_history = 10
+        self.id2target = {1: 'stop'}
+
+        # Initialize target metadata for each label (e.g. stop sign, speed signs)
+        self.targets = {
+            lbl: {
+                'id': id,  # Numerical class ID
+                'history': deque([False] * self.len_history, maxlen=self.len_history),  # Detection history
+                'detected': False,   # Whether the target is currently detected
+                'reacted': False,    # Whether the vehicle has already reacted
+                'threshold': 0.5,    # Detection threshold
+                'distance': 0.0,     # Current distance to the target
+                'min_distance': 2.0  # Distance threshold to start reacting
+            }
+            for id, lbl in self.id2target.items()
+}
+    def stop_and_wait(self, target, duration=2.0):
+        # Update detection flag based on average detection history
+        target['detected'] = True if np.mean(target['history']) > target['threshold'] else False
+
+        # Only stop if target is detected, not yet reacted, and close enough
+        if target['detected'] and not target['reacted']:
+            if target['distance'] < target['min_distance']:
+                ackermann_msg = to_ackermann(0.0, self.last_steering_angle)
+                self.publisher.publish(ackermann_msg)  # BRAKE
+                time.sleep(duration)  # Wait for a specified duration
+                target['reacted'] = True  # Mark target as handled
+
+        if not any(target['history']) and target['reacted']:
+            target['reacted'] = False  # Reset reaction flag if the target hasn't been detected in any recent frames
+
+
+    def obj_callback(self, msg: PoseStamped):
+
+        # Convert incoming pose message to position, heading, and timestamp
+        point, heading, timestamp_unix = pose_to_np(msg)
+
+        id = int(point[-1]) # Extract class ID stored in the z-coordinate
+        x, _ = point[:2] # Get distance
+        lbl = self.id2target[id]
+        data = self.targets[lbl]
+
+        
+        # Check if point is NaN (object not detected or not visible)
+        if np.isnan(point).any():
+            data['history'].append(False)
+        else:
+            data['history'].append(True)
+            data['distance'] = x
+
+
+        if lbl == 'stop':
+            self.stop_and_wait(data)
+
 
     def waypoint_callback(self, msg: PoseStamped):
 
