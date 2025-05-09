@@ -21,12 +21,7 @@ class PIDcontroller(Node):
 
         # Create a subscription to listen for PoseStamped messages from the '/waypoint' topic
         # When a message is received, the 'self.waypoint_callback' function is called
-        self.subscription = self.create_subscription(
-            PoseStamped,
-            '/waypoint',
-            self.waypoint_callback,
-            qos_profile
-        )
+        self.way_sub = self.create_subscription(PoseStamped, '/waypoint', self.waypoint_callback, qos_profile)
 
         # Load parameters
         self.params_set = False
