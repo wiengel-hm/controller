@@ -99,7 +99,6 @@ class PIDcontroller(Node):
 
     def waypoint_callback(self, msg: PoseStamped):
         
-        self.get_logger().info('GOT SETH')
         # Convert incoming pose message to position, heading, and timestamp
         point, heading, timestamp_unix = pose_to_np(msg)
 
