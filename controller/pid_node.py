@@ -18,12 +18,12 @@ class PIDcontroller(Node):
         qos_profile.depth = 1  # Keep only the latest message
 
         # Create a publisher for sending AckermannDriveStamped messages to the '/autonomous/ackermann_cmd' topic
-        self.publisher = self.create_publisher(AckermannDriveStamped, '/autonomous/ackermann_cmd', qos_profile)
+        self.publisher = self.create_publisher(AckermannDriveStamped, 'autonomous/ackermann_cmd', qos_profile)
 
         # Create a subscription to listen for PoseStamped messages from the '/waypoint' topic
         # When a message is received, the 'self.waypoint_callback' function is called
-        self.way_sub = self.create_subscription(PoseStamped,'/waypoint', self.waypoint_callback, qos_profile)
-        self.obj_sub = self.create_subscription(PoseStamped,'/object', self.obj_callback, qos_profile)
+        self.way_sub = self.create_subscription(PoseStamped,'waypoint', self.waypoint_callback, qos_profile)
+        self.obj_sub = self.create_subscription(PoseStamped,'object', self.obj_callback, qos_profile)
 
         # Load parameters
         self.params_set = False
@@ -98,7 +98,8 @@ class PIDcontroller(Node):
 
 
     def waypoint_callback(self, msg: PoseStamped):
-
+        
+        self.get_logger().info('GOT SETH')
         # Convert incoming pose message to position, heading, and timestamp
         point, heading, timestamp_unix = pose_to_np(msg)
 
