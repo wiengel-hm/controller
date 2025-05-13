@@ -38,7 +38,7 @@ class Target():
                 self.has_reacted = self.react(node)  # Pass node here
 
         # Reset if target is no longer visible
-        elif not self.visible and self.has_reacted:
+        elif not any(self.history) and self.has_reacted:
             self.has_reacted = False
 
     def react(self, node):
