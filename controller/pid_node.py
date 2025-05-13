@@ -8,6 +8,70 @@ from ros2_numpy import pose_to_np, to_ackermann
 from collections import deque
 import numpy as np
 import time
+from controller.targets import Target
+
+class Vehicle():
+    def __init__(self, id, label, min_distance = 1.0, max_distance = 2.5):
+        self.id = id          # class ID
+        self.label = label    # Descriptive label for the target (e.g., 'stop_sign')
+        self.min_distance = min_distance
+        self.max_distance = max_distance
+
+    def update(self, position, node):
+        x = position[0]
+        if x < self.min_distance:
+            node.speed = 0
+            node.get_logger().info(f"Leading vehicle too close at {x:.2f} meters. Stopping.")
+        else:
+            # Compute how far we are relative to the minimum safe distance (clamped between 0 and 1)
+            distance_ratio = max(0.0, min((x - self.min_distance) / (self.max_distance - self.min_distance), 1.0))
+
+            # Interpolate speed between min_speed and max_speed
+            node.speed = node.min_speed + distance_ratio * (node.max_speed - node.min_speed)
+
+            node.get_logger().info(f"Leading vehicle at {x:.2f} meters. Adjusting speed to {node.speed:.2f}.")
+
+class StopSign(Target):
+    def __init__(self, id, label, threshold=0.3, len_history=10, min_distance=1.5, duration=2.0):
+        super().__init__(id, label, threshold, len_history, min_distance)
+        self.duration = duration
+
+    def react(self, node):
+        node.get_logger().info(f"Stopping for stop sign at x={self.position[0]:.2f}")
+        msg = to_ackermann(0.0, node.last_steering_angle)
+        node.publisher.publish(msg)
+        time.sleep(self.duration)
+        node.get_logger().info(f"Resume driving...")
+        return True
+
+class SpeedSign(Target):
+    def __init__(self, id, label, threshold=0.3, len_history=10, min_distance=1.5, speed=0.6):
+        super().__init__(id, label, threshold, len_history, min_distance)
+        self.speed = speed
+
+    def react(self, node):
+        node.get_logger().info(f"Setting speed to {self.speed:.2f} m/s at x={self.position[0]:.2f}")
+        node.speed = self.speed  # Assuming this is consumed somewhere else in your control loop
+        return True
+
+class RedLight(Target):
+    def __init__(self, id, label, threshold=0.3, len_history=10, min_distance=1.5):
+        super().__init__(id, label, threshold, len_history, min_distance)
+
+    def react(self, node):
+        node.get_logger().info(f"Red light detected at x={self.position[0]:.2f}. Stopping...")
+        node.speed = 0.0  # Stop vehicle
+        return True
+
+class GreenLight(Target):
+    def __init__(self, id, label, threshold=0.3, len_history=10, min_distance=1.5):
+        super().__init__(id, label, threshold, len_history, min_distance)
+
+    def react(self, node):
+        # Green light in range — resume driving
+        node.get_logger().info(f"Green light detected at x={self.position[0]:.2f}. Resume driving...")
+        node.speed = node.max_speed  # Resume driving
+        return True
 
 class PIDcontroller(Node):
     def __init__(self):
@@ -22,8 +86,9 @@ class PIDcontroller(Node):
 
         # Create a subscription to listen for PoseStamped messages from the '/waypoint' topic
         # When a message is received, the 'self.waypoint_callback' function is called
-        self.way_sub = self.create_subscription(PoseStamped,'waypoint', self.waypoint_callback, qos_profile)
-        self.obj_sub = self.create_subscription(PoseStamped,'object', self.obj_callback, qos_profile)
+
+        self.way_sub = self.create_subscription(PoseStamped,'/waypoint', self.waypoint_callback, qos_profile)
+        self.obj_sub = self.create_subscription(PoseStamped,'/objects', self.obj_callback, qos_profile)
 
         # Load parameters
         self.params_set = False
@@ -42,37 +107,17 @@ class PIDcontroller(Node):
         self.max_out = 9
         self.success = deque([True] * self.max_out, maxlen=self.max_out)
 
-        self.len_history = 10
-        self.id2target = {1: 'stop'}
 
-        # Initialize target metadata for each label (e.g. stop sign, speed signs)
-        self.targets = {
-            lbl: {
-                'id': id,  # Numerical class ID
-                'history': deque([False] * self.len_history, maxlen=self.len_history),  # Detection history
-                'detected': False,   # Whether the target is currently detected
-                'reacted': False,    # Whether the vehicle has already reacted
-                'threshold': 0.5,    # Detection threshold
-                'distance': 0.0,     # Current distance to the target
-                'min_distance': 2.0  # Distance threshold to start reacting
-            }
-            for id, lbl in self.id2target.items()
-}
-    def stop_and_wait(self, target, duration=2.0):
-        # Update detection flag based on average detection history
-        target['detected'] = True if np.mean(target['history']) > target['threshold'] else False
+        self.id2target = {
+            0: Vehicle(0, 'car'),
+            1: StopSign(1, 'stop'),
+            2: SpeedSign(2, 'speed_2mph', speed = 0.6),
+            3: SpeedSign(3, 'speed_3mph', speed = 0.8),
+            4: GreenLight(4, 'green'),
+            5: RedLight(4, 'red'),
+        }
 
-        # Only stop if target is detected, not yet reacted, and close enough
-        if target['detected'] and not target['reacted']:
-            if target['distance'] < target['min_distance']:
-                ackermann_msg = to_ackermann(0.0, self.last_steering_angle)
-                self.publisher.publish(ackermann_msg)  # BRAKE
-                time.sleep(duration)  # Wait for a specified duration
-                target['reacted'] = True  # Mark target as handled
-
-        if not any(target['history']) and target['reacted']:
-            target['reacted'] = False  # Reset reaction flag if the target hasn't been detected in any recent frames
-
+  
 
     def obj_callback(self, msg: PoseStamped):
 
@@ -80,22 +125,8 @@ class PIDcontroller(Node):
         point, heading, timestamp_unix = pose_to_np(msg)
 
         id = int(point[-1]) # Extract class ID stored in the z-coordinate
-        x, _ = point[:2] # Get distance
-        lbl = self.id2target[id]
-        data = self.targets[lbl]
 
-        
-        # Check if point is NaN (object not detected or not visible)
-        if np.isnan(point).any():
-            data['history'].append(False)
-        else:
-            data['history'].append(True)
-            data['distance'] = x
-
-
-        if lbl == 'stop':
-            self.stop_and_wait(data)
-
+        self.id2target[id].update(point, self)
 
     def waypoint_callback(self, msg: PoseStamped):
         
@@ -157,7 +188,8 @@ class PIDcontroller(Node):
             parameters=[
                 ('kp', 0.9),
                 ('kd', 0.0),
-                ('speed', 0.6),
+                ('max_speed', 0.8),
+                ('min_speed', 0.4),
             ]
         )
 
@@ -165,7 +197,9 @@ class PIDcontroller(Node):
         try:
             self.kp = self.get_parameter('kp').get_parameter_value().double_value
             self.kd = self.get_parameter('kd').get_parameter_value().double_value
-            self.speed = self.get_parameter('speed').get_parameter_value().double_value
+            self.max_speed = self.get_parameter('max_speed').get_parameter_value().double_value
+            self.min_speed = self.get_parameter('min_speed').get_parameter_value().double_value
+            self.speed = self.max_speed
 
             if not self.params_set:
                 self.get_logger().info("Parameters loaded successfully")
